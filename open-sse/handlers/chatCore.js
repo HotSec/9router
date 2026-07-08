@@ -47,10 +47,16 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
   const modelTargetFormat = getModelTargetFormat(alias, model);
-  // Multi-endpoint providers: pick transport matching sourceFormat → zero translation
+  // Multi-endpoint providers: pick transport matching sourceFormat → zero translation.
+  // If found, force targetFormat=sourceFormat so we skip translation entirely —
+  // otherwise the body could be translated to modelTargetFormat and sent to a
+  // transport that doesn't understand it.
   const runtimeTransport = resolveTransport(provider, sourceFormat);
-  const targetFormat = modelTargetFormat || runtimeTransport?.format || getTargetFormat(provider);
-  if (runtimeTransport && credentials) credentials.runtimeTransport = runtimeTransport;
+  const skipTranslation = runtimeTransport?.format === sourceFormat;
+  if (skipTranslation && credentials) credentials.runtimeTransport = runtimeTransport;
+  const targetFormat = skipTranslation
+    ? sourceFormat
+    : (modelTargetFormat || runtimeTransport?.format || getTargetFormat(provider));
   const stripList = getModelStrip(alias, model);
   const upstreamModel = getModelUpstreamId(alias, model);
 

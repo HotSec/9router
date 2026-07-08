@@ -9,6 +9,7 @@ import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
+import { extractThinkTags } from "../../utils/thinkExtractor.js";
 
 function parseToolArguments(value) {
   if (!value) return {};
@@ -242,6 +243,25 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     : responseBody;
   const isClaudeMessageResponse = sourceFormat === FORMATS.CLAUDE && translatedResponse?.type === "message";
 
+  // Extract <think>...</think> from content into reasoning_content for providers
+  // that inline thinking as XML tags in the content field (e.g. MiniMax M3 on
+  // OpenAI-format tiers). Non-streaming responses are a single JSON blob — a
+  // simple regex pass suffices.
+  let extractedThink = false;
+  if (translatedResponse?.choices) {
+    for (const choice of translatedResponse.choices) {
+      const msg = choice?.message;
+      if (msg?.content && typeof msg.content === "string") {
+        const { content, reasoning } = extractThinkTags(msg.content);
+        if (reasoning) {
+          msg.reasoning_content = reasoning;
+          msg.content = content;
+          extractedThink = true;
+        }
+      }
+    }
+  }
+
   // Fix finish_reason for tool_calls: some providers return non-standard values (e.g. "other")
   if (translatedResponse?.choices?.[0]) {
     const choice = translatedResponse.choices[0];
@@ -270,10 +290,9 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     translatedResponse.usage = filterUsageForFormat(addBufferToUsage(translatedResponse.usage), sourceFormat);
   }
 
-  // Strip reasoning_content only when content is non-empty.
-  // When content is empty (e.g. thinking models that used all tokens for reasoning),
-  // reasoning_content is the only useful output and must be preserved.
-  if (!isClaudeMessageResponse && translatedResponse?.choices) {
+  // Strip reasoning_content only when content is non-empty AND we didn't just
+  // extract it from <think> tags above (those models need both fields exposed).
+  if (!isClaudeMessageResponse && translatedResponse?.choices && !extractedThink) {
     for (const choice of translatedResponse.choices) {
       if (choice?.message?.reasoning_content && choice.message.content) {
         delete choice.message.reasoning_content;

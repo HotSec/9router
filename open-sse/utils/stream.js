@@ -7,6 +7,7 @@ import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatInco
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
+import { createThinkExtractor } from "./thinkExtractor.js";
 
 export { COLORS, formatSSE };
 export { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER };
@@ -72,6 +73,9 @@ export function createSSEStream(options = {}) {
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
+
+  // State for extracting <think>...</think> to reasoning_content across SSE chunks
+  const extractThink = createThinkExtractor();
 
   return new TransformStream({
     transform(chunk, controller) {
@@ -149,6 +153,25 @@ export function createSSEStream(options = {}) {
               }
 
               const delta = parsed.choices?.[0]?.delta;
+
+              // Extract <think>...</think> from content into reasoning_content.
+              // MiniMax M3 on OpenAI-format provider tiers embeds thinking as XML
+              // tags inside `content` instead of a separate `reasoning_content`.
+              if (typeof delta?.content === "string") {
+                const { content: text, reasoning } = extractThink(delta.content);
+                if (reasoning) {
+                  delta.reasoning_content = reasoning;
+                }
+                if (text !== delta.content) {
+                  if (delta.reasoning_content && (!text || !text.trim())) {
+                    delete delta.content;
+                  } else {
+                    delta.content = text || "";
+                  }
+                  fieldsInjected = true;
+                }
+              }
+
               const content = delta?.content;
               const reasoning = delta?.reasoning_content;
               if (content && typeof content === "string") {
